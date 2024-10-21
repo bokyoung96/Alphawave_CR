@@ -1,7 +1,7 @@
 import ccxt
-import datetime
 import pytz
 import pandas as pd
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -33,9 +33,6 @@ class FundingRateFetcher:
                 print(f"Error initializing exchange {mkt}: {str(e)}")
 
     def fetch_funding_rates(self):
-        if not self.funding_rates.empty:
-            print("Funding rates already fetched. Skipping fetch_funding_rates.")
-            return
         funding_rates = []
 
         def fetch_rate(mkt, exchange, symbol):
@@ -68,6 +65,7 @@ class FundingRateFetcher:
                 result = future.result()
                 if result:
                     funding_rates.append(result)
+
         self.funding_rates = pd.DataFrame(funding_rates)
         print(
             f"Fetched {len(self.funding_rates)} funding rates from {len(self.mkts)} exchanges.")
@@ -187,12 +185,6 @@ class FundingRateFetcher:
         print("Final top funding rates obtained.")
         return self.main_df
 
-    def convert_timestamp_to_kst(self, timestamp):
-        if timestamp:
-            return datetime.datetime.fromtimestamp(timestamp / 1000, tz=pytz.utc).astimezone(self.kst).strftime('%Y-%m-%d %H:%M:%S')
-        else:
-            return 'Unknown'
-
     def get_additional_data_by_symbol(self, symbol):
         if self.additional_data.empty:
             self.fetch_additional_data()
@@ -210,9 +202,16 @@ class FundingRateFetcher:
             'ask_bid_ratio': 4,
             'volumeSpread': 4
         })
-        formatted_df = self.format_dataframe(df.reset_index(drop=True))
+        res = self.format_dataframe(df.reset_index(drop=True))
+        res = res.rename(columns=self.format_cols)
         print(f"Data for {symbol}:")
-        return formatted_df
+        return res
+
+    def convert_timestamp_to_kst(self, timestamp):
+        if timestamp:
+            return datetime.fromtimestamp(timestamp / 1000, tz=pytz.utc).astimezone(self.kst).strftime('%m-%d %H:%M')
+        else:
+            return 'Unknown'
 
     def format_volume(self, x):
         try:
@@ -241,7 +240,26 @@ class FundingRateFetcher:
                          'price', 'volume', 'bid', 'ask', 'spread', 'ask_bid_ratio', 'volumeSpread']
         existing_columns = [col for col in desired_order if col in df.columns]
         df = df[existing_columns]
+        df = df.rename(columns=self.format_cols)
         return df
+
+    @property
+    def format_cols(self):
+        cols = {
+            'exchange': 'exch',
+            'symbol': 'symb',
+            'fundingRate (%)': 'FR (%)',
+            'fundingDatetime': 'FD',
+            'position': 'pos',
+            'price': 'p',
+            'volume': 'vol',
+            'bid': 'bid',
+            'ask': 'ask',
+            'spread': 'spr',
+            'ask_bid_ratio': 'ab_r',
+            'volumeSpread': 'volspr'
+        }
+        return cols
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
-import logging
 import pandas as pd
+
 from FundingRateFetcher import *
 
 
@@ -11,41 +11,47 @@ class PPFundingRateFetcher(FundingRateFetcher):
         formatted_rows = []
 
         col_widths = {
-            'exchange': 10,
-            'symbol': 20,
-            'fundingRate (%)': 10,
-            'fundingDatetime': 20,
-            'position': 8,
-            'price': 8,
-            'volume': 10,
+            'exch': 10,
+            'symb': 20,
+            'FR (%)': 8,
+            'FD': 12,
+            'pos': 4,
+            'p': 8,
+            'vol': 10,
             'bid': 8,
             'ask': 8,
-            'spread': 8,
-            'ask_bid_ratio': 10,
-            'volumeSpread': 12
+            'spr': 8,
+            'ab_r': 8,
+            'volspr': 8
         }
 
-        headers = []
-        for col in df.columns:
-            headers.append(f"{col:<{col_widths[col]}}")
+        headers = [f"{col:<{col_widths[col]}}" for col in df.columns]
         formatted_rows.append(" | ".join(headers))
 
         for _, row in df.iterrows():
             formatted_row = []
             for col in df.columns:
-                formatted_row.append(f"{str(row[col]):<{col_widths[col]}}")
+                value = row[col] if pd.notna(row[col]) else ''
+                formatted_row.append(f"{str(value):<{col_widths[col]}}")
             formatted_rows.append(" | ".join(formatted_row))
 
         return "\n".join(formatted_rows)
 
     def get_funding_rate_mdstr(self):
-        res = self.run()
-        logging.debug(f"Raw DataFrame: {res}")
+        try:
+            res = self.run()
+            table_text = self.format_dataframe_as_text(res)
+            return f"```\n{table_text}\n```"
+        except Exception as e:
+            return f"Error generating funding rate data: {str(e)}"
 
-        table_text = self.format_dataframe_as_text(res)
-        logging.debug(f"Formatted text table: {table_text}")
-
-        return f"```\n{table_text}\n```"
+    def get_additional_data_by_symbol_mdstr(self, symbol):
+        try:
+            res = self.get_additional_data_by_symbol(symbol)
+            table_text = self.format_dataframe_as_text(res)
+            return f"```\n{table_text}\n```"
+        except Exception as e:
+            return f"Error generating addtitional symbol data: {str(e)}"
 
 
 if __name__ == "__main__":
