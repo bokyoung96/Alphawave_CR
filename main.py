@@ -26,7 +26,7 @@ def parse_arguments():
                         help='Take profit percentage (e.g., 5 for 5%)')
     parser.add_argument('--stop_loss', type=float, default=None,
                         help='Stop loss percentage (e.g., 5 for 5%)')
-    parser.add_argument('--signal_interval', type=int, default=60,
+    parser.add_argument('--signal_interval', type=float, default=60.0,
                         help='Signal detection interval in seconds')
     parser.add_argument('--use_telegram', action='store_true',
                         help='Enable Telegram notifications')
@@ -83,4 +83,5 @@ if __name__ == '__main__':
     args = parse_arguments()
     run_trading_system(args)
 
-# python main.py --symbol 'APE/USDT:USDT' --amount 100 --time_limit 1800 --timeframe '5m' --strategy KaufmanAMA --max_positions 500 --take_profit 5 --stop_loss 2 --signal_interval 60
+# python main.py --symbol 'APE/USDT:USDT' --amount 1000 --time_limit 1800 --timeframe '1m' --strategy KaufmanAMA --max_positions 1000 --take_profit 5 --stop_loss 2 --signal_interval 60.0
+# python main.py --symbol 'APE/USDT:USDT' --amount 1 --time_limit 1800 --timeframe '1m' --strategy KaufmanAMA --max_positions 1 --take_profit 0.5 --stop_loss 0.3 --signal_interval 60.0

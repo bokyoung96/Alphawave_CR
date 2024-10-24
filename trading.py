@@ -13,20 +13,18 @@ class Trading:
         client,
         symbol: str,
         strategy_type: StrategyType,
-        leverage: int = 1,
         timeframe: str = '1m',
         amount: float = 1.0,
         max_positions: int = 5,
         take_profit: float = None,
         stop_loss: float = None,
-        signal_interval: int = 60,
+        signal_interval: float = 60.0,
         telegram_sender: TelegramSender = None,
         **strategy_kwargs
     ):
         self.lock = threading.Lock()
         self.client = client
         self.symbol = symbol
-        self.leverage = leverage
         self.timeframe = timeframe
         self.amount = amount
         self.max_positions = max_positions
@@ -37,20 +35,16 @@ class Trading:
         self.strategy = strategy_pool(strategy_type, **strategy_kwargs)
         self.positions = []
 
-        self.set_leverage()
-
-    def set_leverage(self):
-        """레버리지 설정"""
-        try:
-            self.client.okx.set_leverage(self.leverage, self.symbol)
-            logging.info(f"Leverage set to {self.leverage}x for {self.symbol}")
-        except ccxt.BaseError as e:
-            logging.error(f"Failed to set leverage: {str(e)}")
-
     def fetch_price_data(self) -> list:
         try:
+            timeframe = self.timeframe
+            valid_timeframes = self.client.okx.timeframes
+            if timeframe not in valid_timeframes:
+                logging.error(f"Timeframe {timeframe} is not supported.")
+                return []
+
             ohlcv = self.client.okx.fetch_ohlcv(
-                self.symbol, timeframe=self.timeframe, limit=self.strategy.period
+                self.symbol, timeframe=timeframe, limit=self.strategy.period
             )
             prices = [candle[4] for candle in ohlcv]
             return prices
@@ -59,6 +53,13 @@ class Trading:
             return []
 
     async def execute_trade(self, side: str):
+        existing_side = self.get_current_position_side()
+
+        if existing_side and existing_side != side:
+            logging.info(
+                "Signal direction changed. Closing all existing positions.")
+            await self.close_all_positions()
+
         if len(self.positions) >= self.max_positions:
             logging.info(
                 "Maximum number of positions reached. Holding position."
@@ -116,6 +117,11 @@ class Trading:
             logging.error(f"Failed to execute trade: {str(e)}")
             return None
 
+    def get_current_position_side(self):
+        if not self.positions:
+            return None
+        return self.positions[0]['side']
+
     async def close_position(self, position):
         side = 'sell' if position['side'] == 'buy' else 'buy'
         try:
@@ -164,7 +170,7 @@ class Trading:
 
             if self.telegram_sender:
                 message = (
-                    f"Closed position: {side.upper()} {self.amount} "
+                    f"Closed position: {side.upper()} {position['amount']} "
                     f"{self.symbol} at {exit_price}. P/L: {profit_loss}"
                 )
                 await self.telegram_sender.send_message(message)
@@ -174,7 +180,11 @@ class Trading:
             logging.error(f"Failed to close position: {str(e)}")
             return None
 
-    def check_take_profit_stop_loss(self, current_price):
+    async def close_all_positions(self):
+        for position in self.positions[:]:
+            await self.close_position(position)
+
+    async def check_take_profit_stop_loss(self, current_price):
         for position in self.positions[:]:
             entry_price = position['entry_price']
             side = position['side']
@@ -187,10 +197,10 @@ class Trading:
 
             if self.take_profit and profit >= self.take_profit:
                 logging.info("Take profit level reached.")
-                asyncio.create_task(self.close_position(position))
+                await self.close_position(position)
             elif self.stop_loss and profit <= -self.stop_loss:
                 logging.info("Stop loss level reached.")
-                asyncio.create_task(self.close_position(position))
+                await self.close_position(position)
 
     async def manage_position(self):
         with self.lock:
@@ -211,10 +221,20 @@ class Trading:
                 )
                 await self.telegram_sender.send_message(message)
 
-            self.check_take_profit_stop_loss(current_price)
+            await self.check_take_profit_stop_loss(current_price)
 
             if signal == 'buy' or signal == 'sell':
-                await self.execute_trade(signal)
+                existing_side = self.get_current_position_side()
+
+                if existing_side != signal:
+                    await self.execute_trade(signal)
+                else:
+                    if len(self.positions) < self.max_positions:
+                        await self.execute_trade(signal)
+                    else:
+                        logging.info(
+                            "Maximum number of positions reached. Holding position."
+                        )
             else:
                 logging.info("No action taken. Holding position.")
 
@@ -222,18 +242,15 @@ class Trading:
         self.running = True
         start_time = time.time()
         while True:
-            with self.lock:
-                if not self.running or (time.time() - start_time >= time_limit):
-                    break
+            if not self.running or (time.time() - start_time >= time_limit):
+                break
             await self.manage_position()
             await asyncio.sleep(self.signal_interval)
         logging.info("Trading session ended.")
 
         if self.positions:
             logging.info("Closing any remaining open positions.")
-            with self.lock:
-                for position in self.positions[:]:
-                    await self.close_position(position)
+            await self.close_all_positions()
 
     def get_balance_info(self):
         balance = self.client.get_balance()
@@ -260,13 +277,9 @@ class Trading:
                 )
         return positions_info
 
-    async def close_all_positions(self):
-        with self.lock:
-            logging.info("Closing all open positions upon user request.")
-            for position in self.positions[:]:
-                await self.close_position(position)
-
-            self.running = False
+    async def close_all_positions_request(self):
+        await self.close_all_positions()
+        self.running = False
 
         if self.telegram_sender:
             message = "All positions have been closed as per your request."
