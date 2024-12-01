@@ -1,7 +1,8 @@
+import json
 import logging
 import argparse
-import threading
 import asyncio
+import signal
 from trading import Trading
 from OKXclient import OKXClient
 from strategy import StrategyType
@@ -33,8 +34,9 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def run_trading_system(args):
+async def run_trading_system(args, shutdown_event):
     client = OKXClient()
+    await client.initialize()
 
     strategy_type = StrategyType(args.strategy)
 
@@ -64,11 +66,59 @@ def run_trading_system(args):
     )
 
     if args.use_telegram:
-        telegram_handler = TelegramHandler(trading_bot=trader)
-        threading.Thread(target=telegram_handler.start_bot,
-                         daemon=True).start()
+        telegram_handler = TelegramHandler(
+            trading_bot=trader, telegram_sender=telegram_sender)
+        bot_task = asyncio.create_task(telegram_handler.start_bot())
+    else:
+        bot_task = None
 
-    asyncio.run(trader.run(time_limit=args.time_limit))
+    trading_task = asyncio.create_task(trader.run(time_limit=args.time_limit))
+
+    await shutdown_event.wait()
+
+    logging.info("Shutting down...")
+
+    trader.running = False
+    if args.use_telegram:
+        await telegram_handler.application.shutdown()
+        await telegram_sender.bot.close()
+
+    await client.close()
+
+    trading_task.cancel()
+    if bot_task:
+        bot_task.cancel()
+
+    try:
+        await asyncio.gather(trading_task, bot_task, return_exceptions=True)
+    except Exception as e:
+        logging.error(f"Error during shutdown: {str(e)}")
+
+
+async def main():
+    args = parse_arguments()
+    shutdown_event = asyncio.Event()
+
+    loop = asyncio.get_running_loop()
+
+    def shutdown_signal():
+        logging.info("Received shutdown signal.")
+        asyncio.create_task(shutdown_event.set())
+
+    for signame in {'SIGINT', 'SIGTERM'}:
+        try:
+            loop.add_signal_handler(getattr(signal, signame), shutdown_signal)
+        except NotImplementedError:
+            pass
+
+    try:
+        await run_trading_system(args, shutdown_event)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {str(e)}")
+    finally:
+        logging.info("Bot stopped.")
 
 
 if __name__ == '__main__':
@@ -80,8 +130,13 @@ if __name__ == '__main__':
             logging.StreamHandler()
         ]
     )
-    args = parse_arguments()
-    run_trading_system(args)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Trading bot stopped manually.")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred: {str(e)}")
 
-# python main.py --symbol 'APE/USDT:USDT' --amount 1000 --time_limit 1800 --timeframe '1m' --strategy KaufmanAMA --max_positions 1000 --take_profit 5 --stop_loss 2 --signal_interval 60.0
-# python main.py --symbol 'APE/USDT:USDT' --amount 1 --time_limit 1800 --timeframe '1m' --strategy KaufmanAMA --max_positions 1 --take_profit 0.5 --stop_loss 0.3 --signal_interval 60.0
+
+# python main.py --symbol 'APE/USDT:USDT' --amount 1 --time_limit 1800 --timeframe '1m' --strategy KaufmanAMA --max_positions 1 --take_profit 5 --stop_loss 2 --signal_interval 60.0 --use_telegram
+# python main.py --symbol 'ETH/USDT:USDT' --amount 1 --time_limit 1800 --timeframe '1m' --strategy KaufmanAMA --max_positions 1 --take_profit 5 --stop_loss 2 --signal_interval 60.0 --use_telegram

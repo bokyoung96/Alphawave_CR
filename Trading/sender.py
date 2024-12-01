@@ -1,5 +1,5 @@
-import logging
 import json
+import logging
 from telegram import Bot
 from telegram.error import TelegramError
 
@@ -12,7 +12,8 @@ class TelegramSender:
             raise Exception("Telegram configuration not loaded.")
 
         self.token = self.config.get('kamp_alphawave_bot_token')
-        self.chat_id = self.config.get('bot_myself_chat_id')
+        self.group_chat_id = self.config.get(
+            'alphawave_trading_group_chat_id')
         self.bot = Bot(token=self.token)
 
     def load_config(self, file_path: str) -> dict:
@@ -29,7 +30,7 @@ class TelegramSender:
 
     async def send_message(self, message: str):
         try:
-            await self.bot.send_message(chat_id=self.chat_id, text=message)
-            logging.info("Message sent to Telegram.")
+            await self.bot.send_message(chat_id=self.group_chat_id, text=message)
+            logging.info("Message sent to group Telegram chat.")
         except TelegramError as e:
             logging.error(f"Failed to send message to Telegram: {str(e)}")
