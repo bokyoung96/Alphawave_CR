@@ -1,18 +1,18 @@
 import json
 import logging
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 
 class TelegramHandler:
-    def __init__(self, trading_bot, config_file_path='config_trading.json'):
+    def __init__(self, trading_bot, telegram_sender, config_file_path='config_trading.json'):
         self.trading_bot = trading_bot
+        self.telegram_sender = telegram_sender
         self.config = self.load_config(config_file_path)
         if not self.config:
             logging.error("Telegram configuration not loaded. Exiting...")
             raise Exception("Telegram configuration not loaded.")
 
         self.token = self.config.get('kamp_alphawave_bot_token')
-        self.chat_id = self.config.get('bot_myself_chat_id')
 
         self.application = ApplicationBuilder().token(self.token).build()
 
@@ -22,6 +22,8 @@ class TelegramHandler:
         self.application.add_handler(
             CommandHandler('positions', self.get_positions))
         self.application.add_handler(CommandHandler('exit', self.exit_trading))
+        self.application.add_handler(
+            MessageHandler(filters.COMMAND, self.unknown))
 
     def load_config(self, file_path: str) -> dict:
         try:
@@ -35,20 +37,26 @@ class TelegramHandler:
             logging.error("Error decoding JSON from the configuration file.")
             return None
 
-    async def start(self, update, context):
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Trading bot is running.")
+    async def start(self, update, context: ContextTypes.DEFAULT_TYPE):
+        message = "Trading bot is running."
+        await self.telegram_sender.send_message(message)
 
-    async def get_balance(self, update, context):
+    async def get_balance(self, update, context: ContextTypes.DEFAULT_TYPE):
         balance_info = self.trading_bot.get_balance_info()
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=balance_info)
+        await self.telegram_sender.send_message(balance_info)
 
-    async def get_positions(self, update, context):
+    async def get_positions(self, update, context: ContextTypes.DEFAULT_TYPE):
         positions_info = self.trading_bot.get_positions_info()
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=positions_info)
+        await self.telegram_sender.send_message(positions_info)
 
-    async def exit_trading(self, update, context):
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="Exiting all positions and stopping trading.")
+    async def exit_trading(self, update, context: ContextTypes.DEFAULT_TYPE):
+        await self.telegram_sender.send_message("Exiting all positions and stopping trading.")
         await self.trading_bot.close_all_positions()
+        self.trading_bot.running = False
+
+    async def unknown(self, update, context: ContextTypes.DEFAULT_TYPE):
+        message = "Unknown command. Available commands: /start, /balance, /positions, /exit."
+        await self.telegram_sender.send_message(message)
 
     async def start_bot(self):
         await self.application.run_polling()

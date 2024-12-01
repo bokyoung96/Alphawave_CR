@@ -1,7 +1,5 @@
-import ccxt
+import ccxt.async_support as ccxt
 import logging
-import threading
-import time
 import asyncio
 from strategy import AbstractStrategy, strategy_pool, StrategyType
 from sender import TelegramSender
@@ -19,10 +17,10 @@ class Trading:
         take_profit: float = None,
         stop_loss: float = None,
         signal_interval: float = 60.0,
-        telegram_sender: TelegramSender = None,
+        telegram_sender=None,
         **strategy_kwargs
     ):
-        self.lock = threading.Lock()
+        self.lock = asyncio.Lock()
         self.client = client
         self.symbol = symbol
         self.timeframe = timeframe
@@ -34,8 +32,9 @@ class Trading:
         self.telegram_sender = telegram_sender
         self.strategy = strategy_pool(strategy_type, **strategy_kwargs)
         self.positions = []
+        self.running = True
 
-    def fetch_price_data(self) -> list:
+    async def fetch_price_data(self) -> list:
         try:
             timeframe = self.timeframe
             valid_timeframes = self.client.okx.timeframes
@@ -43,7 +42,7 @@ class Trading:
                 logging.error(f"Timeframe {timeframe} is not supported.")
                 return []
 
-            ohlcv = self.client.okx.fetch_ohlcv(
+            ohlcv = await self.client.okx.fetch_ohlcv(
                 self.symbol, timeframe=timeframe, limit=self.strategy.period
             )
             prices = [candle[4] for candle in ohlcv]
@@ -62,8 +61,12 @@ class Trading:
 
         if len(self.positions) >= self.max_positions:
             logging.info(
-                "Maximum number of positions reached. Holding position."
-            )
+                "Maximum number of positions reached. Holding position.")
+            return None
+
+        if existing_side == side:
+            logging.info(
+                "Existing position is in the same direction as the signal. Holding position.")
             return None
 
         try:
@@ -72,21 +75,23 @@ class Trading:
                 'posSide': 'long' if side == 'buy' else 'short',
             }
 
-            order = self.client.okx.create_order(
+            order = await self.client.place_order(
                 symbol=self.symbol,
-                type='market',
+                order_type='market',
                 side=side,
                 amount=self.amount,
                 params=order_params
             )
+            if order is None:
+                return None
+
             logging.info(
-                f"Order executed: Side={side}, Amount={self.amount}, "
-                f"Order ID={order['id']}"
+                f"Order executed: Side={side}, Amount={self.amount}, Order ID={order['id']}"
             )
 
             order_id = order['id']
             await asyncio.sleep(0.5)
-            detailed_order = self.client.okx.fetch_order(order_id, self.symbol)
+            detailed_order = await self.client.okx.fetch_order(order_id, self.symbol)
 
             entry_price = (
                 detailed_order['average']
@@ -128,23 +133,26 @@ class Trading:
             order_params = {
                 'tdMode': 'isolated',
                 'posSide': 'long' if side == 'buy' else 'short',
+                'reduceOnly': True
             }
 
-            order = self.client.okx.create_order(
+            order = await self.client.place_order(
                 symbol=self.symbol,
-                type='market',
+                order_type='market',
                 side=side,
                 amount=position['amount'],
                 params=order_params
             )
+            if order is None:
+                return None
+
             logging.info(
-                f"Position closed: Side={side}, Amount={position['amount']}, "
-                f"Order ID={order['id']}"
+                f"Position closed: Side={side}, Amount={position['amount']}, Order ID={order['id']}"
             )
 
             order_id = order['id']
             await asyncio.sleep(0.5)
-            detailed_order = self.client.okx.fetch_order(order_id, self.symbol)
+            detailed_order = await self.client.okx.fetch_order(order_id, self.symbol)
 
             exit_price = (
                 detailed_order['average']
@@ -164,8 +172,7 @@ class Trading:
             self.positions.remove(position)
 
             logging.info(
-                f"Closed position P/L: {profit_loss}, "
-                f"Exit Price: {exit_price}"
+                f"Closed position P/L: {profit_loss}, Exit Price: {exit_price}"
             )
 
             if self.telegram_sender:
@@ -202,9 +209,20 @@ class Trading:
                 logging.info("Stop loss level reached.")
                 await self.close_position(position)
 
+    async def monitor_stop_loss_take_profit(self):
+        while self.running:
+            if self.positions:
+                try:
+                    ticker = await self.client.okx.fetch_ticker(self.symbol)
+                    current_price = ticker['last']
+                    await self.check_take_profit_stop_loss(current_price)
+                except ccxt.BaseError as e:
+                    logging.error(f"Failed to fetch ticker: {str(e)}")
+            await asyncio.sleep(1)
+
     async def manage_position(self):
-        with self.lock:
-            prices = self.fetch_price_data()
+        async with self.lock:
+            prices = await self.fetch_price_data()
             if len(prices) < self.strategy.period:
                 logging.warning("Not enough data to generate a signal.")
                 return
@@ -220,8 +238,6 @@ class Trading:
                     f"Generated signal: {signal}, Current price: {current_price}"
                 )
                 await self.telegram_sender.send_message(message)
-
-            await self.check_take_profit_stop_loss(current_price)
 
             if signal == 'buy' or signal == 'sell':
                 existing_side = self.get_current_position_side()
@@ -240,17 +256,27 @@ class Trading:
 
     async def run(self, time_limit: int):
         self.running = True
-        start_time = time.time()
-        while True:
-            if not self.running or (time.time() - start_time >= time_limit):
-                break
+        start_time = asyncio.get_event_loop().time()
+
+        monitor_task = asyncio.create_task(
+            self.monitor_stop_loss_take_profit())
+
+        while self.running and (asyncio.get_event_loop().time() - start_time < time_limit):
             await self.manage_position()
             await asyncio.sleep(self.signal_interval)
+
         logging.info("Trading session ended.")
 
         if self.positions:
             logging.info("Closing any remaining open positions.")
             await self.close_all_positions()
+
+        monitor_task.cancel()
+        try:
+            await monitor_task
+        except asyncio.CancelledError:
+            logging.info(
+                "Stop loss and take profit monitoring task cancelled.")
 
     def get_balance_info(self):
         balance = self.client.get_balance()
